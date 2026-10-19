@@ -1,0 +1,7 @@
+# Editor and OS cruft
+*.swp
+*~
+.DS_Store
+
+# Omarchy runtime state that should never be committed
+*.state

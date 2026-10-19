@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Sample system metrics as one line of JSON.
+# Usage: metrics-sample <disk-path>
+# CPU usage is a delta between invocations, so keep a state file in
+# $XDG_RUNTIME_DIR and call this repeatedly on a timer.
+set -euo pipefail
+
+DISK_PATH="${1:-/}"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+STATE_FILE="$STATE_DIR/system-metrics-cpu.state"
+
+# --- CPU: per-thread usage from /proc/stat deltas -------------------------
+# Previous idle/total counters per cpu line, space separated: "idle1,total1 ..."
+prev_file="$STATE_FILE"
+
+awk_out="$(
+  awk -v prevfile="$prev_file" '
+    BEGIN {
+      n = 0
+      if ((getline line < prevfile) > 0) {
+        split(line, parts, " ")
+        for (i = 1; i <= length(parts); i++) {
+          split(parts[i], kv, ",")
+          prev_idle[i] = kv[1] + 0
+          prev_total[i] = kv[2] + 0
+        }
+        have_prev = 1
+      }
+    }
+    /^cpu[0-9]+ / {
+      n++
+      idle = $5 + $6              # idle + iowait
+      total = $2 + $3 + $4 + $5 + $6 + $7 + $8
+      didle = idle - prev_idle[n]
+      dtotal = total - prev_total[n]
+      if (!have_prev || dtotal <= 0) usage = 0
+      else { usage = 100 * (dtotal - didle) / dtotal }
+      if (usage < 0) usage = 0
+      if (usage > 100) usage = 100
+      printf "%d\n", usage + 0.5
+      new_idle[n] = idle
+      new_total[n] = total
+    }
+    END {
+      out = ""
+      for (i = 1; i <= n; i++) {
+        if (i > 1) out = out " "
+        out = out new_idle[i] "," new_total[i]
+      }
+      print out > prevfile
+    }
+  ' /proc/stat
+)"
+
+mapfile -t cpu_usage <<< "$awk_out"
+
+# --- Memory from /proc/meminfo -------------------------------------------
+read -r mem_total mem_avail < <(
+  awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2} END {print t, a}' /proc/meminfo
+)
+mem_used_pct=$(awk -v t="$mem_total" -v a="$mem_avail" \
+  'BEGIN { if (t <= 0) print 0; else printf "%d", 100 * (t - a) / t }')
+
+# --- Temperatures from sensors -------------------------------------------
+# Prefer coretemp (per-core + package); fall back to any temp*_input.
+core_temps=""
+package_temp=""
+if command -v sensors >/dev/null 2>&1; then
+  sensors_json="$(sensors -j 2>/dev/null || true)"
+  if [ -n "$sensors_json" ] && command -v jq >/dev/null 2>&1; then
+    # coretemp core readings, in "Core N" order
+    core_temps="$(jq -r '
+      .["coretemp-isa-0000"] // {} | to_entries
+      | map(select(.key | test("^Core [0-9]+$")))
+      | sort_by(.key | capture("(?<n>[0-9]+)").n | tonumber)
+      | map(.value | to_entries
+            | map(select(.key | test("_input$"))) | .[0].value)
+      | map(select(. != null) | floor)
+      | join(" ")
+    ' <<< "$sensors_json" 2>/dev/null || true)"
+    package_temp="$(jq -r '
+      (.["coretemp-isa-0000"] // {})["Package id 0"]
+      | if . == null then "" else (to_entries
+          | map(select(.key | test("_input$"))) | .[0].value | floor) end
+    ' <<< "$sensors_json" 2>/dev/null || true)"
+    if [ -z "$core_temps" ]; then
+      # No coretemp: take every temp*_input from every chip.
+      core_temps="$(jq -r '
+        to_entries | map(.value)
+        | map(to_entries | map(.value))
+        | add | map(to_entries)
+        | add | map(select(.key | test("^temp[0-9]+_input$")))
+        | map(.value | floor) | join(" ")
+      ' <<< "$sensors_json" 2>/dev/null || true)"
+    fi
+  fi
+fi
+
+# If sensors produced nothing, fall back to thermal zones.
+if [ -z "$core_temps" ]; then
+  core_temps="$(for z in /sys/class/thermal/thermal_zone*/temp; do
+    [ -r "$z" ] || continue
+    awk '{ printf "%d ", $1 / 1000 }' "$z"
+  done 2>/dev/null || true)"
+fi
+
+max_temp=0
+for t in $core_temps $package_temp; do
+  [ -n "$t" ] || continue
+  if [ "$t" -gt "$max_temp" ] 2>/dev/null; then max_temp=$t; fi
+done
+if [ "$max_temp" -eq 0 ] && [ -n "$package_temp" ]; then max_temp=$package_temp; fi
+
+# --- Fan from dell_smm (best effort) -------------------------------------
+fan_rpm=""
+if command -v sensors >/dev/null 2>&1 && [ -n "${sensors_json:-}" ] && command -v jq >/dev/null 2>&1; then
+  fan_rpm="$(jq -r '
+    .["dell_smm-isa-00de"].fan1.fan1_input // empty | floor
+  ' <<< "$sensors_json" 2>/dev/null || true)"
+fi
+
+# --- Disk usage for the requested path -----------------------------------
+disk_pct=""
+disk_avail=""
+if dpkg_out="$(df -P "$DISK_PATH" 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5, $4}')"; then
+  disk_pct="${dpkg_out%% *}"
+  disk_avail="${dpkg_out##* }"
+fi
+
+# --- Overall CPU usage (average of thread deltas) ------------------------
+overall=0
+count=0
+sum=0
+for u in "${cpu_usage[@]}"; do
+  sum=$((sum + u))
+  count=$((count + 1))
+done
+if [ "$count" -gt 0 ]; then overall=$((sum / count)); fi
+
+# --- Assemble JSON -------------------------------------------------------
+json_num_or_null() { if [ -n "$1" ]; then printf '%s' "$1"; else printf 'null'; fi; }
+
+cpu_json="$(printf '%s\n' "${cpu_usage[@]}" | paste -sd, - 2>/dev/null || echo "")"
+temp_json="$(printf '%s\n' $core_temps | paste -sd, - 2>/dev/null || echo "")"
+
+printf '{"cpu":{"overall":%s,"perCore":[%s]},"temp":{"max":%s,"cores":[%s],"package":%s},"mem":{"usedPct":%s,"total":%s,"avail":%s},"disk":{"path":"%s","usedPct":%s,"availKb":%s},"fan":%s}\n' \
+  "$overall" \
+  "$cpu_json" \
+  "$max_temp" \
+  "$temp_json" \
+  "$(json_num_or_null "$package_temp")" \
+  "$mem_used_pct" \
+  "$mem_total" \
+  "$mem_avail" \
+  "$DISK_PATH" \
+  "$(json_num_or_null "$disk_pct")" \
+  "$(json_num_or_null "$disk_avail")" \
+  "$(json_num_or_null "$fan_rpm")"

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.alexllama.system-metrics",
+  "name": "System Metrics",
+  "version": "1.0.0",
+  "author": "Alex",
+  "license": "MIT",
+  "description": "CPU usage and temperature, memory and disk usage for the Omarchy bar. Temperature is colour coded green/orange/red. Click for per-core detail, right-click opens btop.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Metrics",
+    "description": "CPU %, hottest core temp (colour coded), memory and disk usage.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "warnTemp": 70,
+      "critTemp": 85,
+      "interval": 2,
+      "diskPath": "/"
+    },
+    "schema": [
+      {
+        "key": "warnTemp",
+        "type": "integer",
+        "label": "Warn temp (C)",
+        "min": 40,
+        "max": 100,
+        "step": 1,
+        "defaultValue": 70,
+        "description": "Temperature at or above which the reading turns orange."
+      },
+      {
+        "key": "critTemp",
+        "type": "integer",
+        "label": "Critical temp (C)",
+        "min": 40,
+        "max": 110,
+        "step": 1,
+        "defaultValue": 85,
+        "description": "Temperature at or above which the reading turns red."
+      },
+      {
+        "key": "interval",
+        "type": "integer",
+        "label": "Refresh (s)",
+        "min": 1,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 2,
+        "description": "How often to sample system metrics."
+      },
+      {
+        "key": "diskPath",
+        "type": "string",
+        "label": "Disk path",
+        "defaultValue": "/",
+        "description": "Mount point whose disk usage is shown."
+      }
+    ]
+  }
+}
