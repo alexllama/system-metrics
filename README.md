@@ -7,6 +7,8 @@ green, orange or red.
 Built with Quickshell (QML) and a small shell sampler that reads `/proc` and
 `sensors`.
 
+![System Metrics preview](preview.png)
+
 ## Features
 
 - **CPU usage** — overall utilisation across all cores and threads.
