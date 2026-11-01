@@ -44,29 +44,8 @@ Right-clicking the widget opens btop. Left-clicking opens the detail popup.
 
 ## Install
 
-Clone into your user plugin directory:
-
 ```bash
-git clone https://github.com/alexllama/system-metrics \
-  ~/.config/omarchy/plugins/io.github.alexllama.system-metrics
-```
-
-Make the sampler executable (the checkout normally preserves this):
-
-```bash
-chmod +x ~/.config/omarchy/plugins/io.github.alexllama.system-metrics/bin/metrics-sample
-```
-
-Add the widget to your bar:
-
-```bash
-omarchy bar put io.github.alexllama.system-metrics --section right
-```
-
-Then restart the shell so the bar picks up the widget:
-
-```bash
-omarchy restart shell
+omarchy plugin add https://github.com/alexllama/system-metrics.git --enable
 ```
 
 > **Note:** bar widgets are not hot-reloaded on this shell version — editing the
